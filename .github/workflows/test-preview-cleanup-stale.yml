@@ -1,0 +1,130 @@
+name: Test - Cleanup Stale Previews
+
+# Simplified version for testing stale preview cleanup
+# This workflow removes previews for closed PRs (safety net)
+# Trigger manually for testing with workflow_dispatch
+
+on:
+  schedule:
+    # Run every day at 3 AM UTC (for testing - more frequent than production)
+    - cron: '0 3 * * *'
+  workflow_dispatch:  # Manual trigger for testing
+
+jobs:
+  cleanup-stale:
+    name: Cleanup Stale Test Previews
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      pull-requests: read
+
+    steps:
+      # Step 1: Get gh-pages branch
+      - name: Checkout gh-pages branch
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          fetch-depth: 1
+
+      # Step 2: Find and cleanup stale previews
+      - name: Find and cleanup stale previews
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const { execSync } = require('child_process');
+
+            console.log('🔍 Starting stale preview cleanup...');
+
+            // Get all open PRs
+            console.log('Fetching open PRs...');
+            const { data: openPRs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+
+            const openPRNumbers = new Set(openPRs.map(pr => pr.number));
+            console.log(`✅ Found ${openPRNumbers.size} open PRs:`,
+                        Array.from(openPRNumbers).sort((a,b) => a-b).join(', '));
+
+            // Check for preview directory
+            const previewDir = 'preview';
+            if (!fs.existsSync(previewDir)) {
+              console.log('⚠️  No preview directory found - nothing to clean up');
+              return;
+            }
+
+            // List all preview directories
+            const previews = fs.readdirSync(previewDir);
+            console.log(`📁 Found ${previews.length} preview directories:`, previews.join(', '));
+
+            // Find stale previews
+            const stalePreviewsToDelete = [];
+
+            for (const preview of previews) {
+              console.log(`\nChecking: ${preview}`);
+
+              // Extract PR number from directory name (e.g., "pr-123")
+              const match = preview.match(/^pr-(\d+)$/);
+              if (!match) {
+                console.log(`  ⚠️  Invalid format, skipping`);
+                continue;
+              }
+
+              const prNumber = parseInt(match[1], 10);
+              console.log(`  📌 PR number: ${prNumber}`);
+
+              // Check if PR is still open
+              if (openPRNumbers.has(prNumber)) {
+                console.log(`  ✅ PR is open, keeping preview`);
+              } else {
+                console.log(`  ❌ PR is closed, marking for deletion`);
+                stalePreviewsToDelete.push(preview);
+              }
+            }
+
+            // Summary
+            console.log('\n' + '='.repeat(50));
+            if (stalePreviewsToDelete.length === 0) {
+              console.log('✅ No stale previews found - all clean!');
+              return;
+            }
+
+            console.log(`🗑️  Found ${stalePreviewsToDelete.length} stale preview(s) to delete:`);
+            stalePreviewsToDelete.forEach(p => console.log(`   - ${p}`));
+            console.log('='.repeat(50) + '\n');
+
+            // Delete stale previews
+            for (const preview of stalePreviewsToDelete) {
+              const previewPath = path.join(previewDir, preview);
+              console.log(`Deleting: ${previewPath}`);
+              execSync(`rm -rf "${previewPath}"`);
+            }
+
+            // Commit changes
+            console.log('\n📝 Committing changes...');
+            execSync('git config user.name "github-actions[bot]"');
+            execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
+            execSync('git add .');
+
+            try {
+              const commitMsg = `Test: Cleanup ${stalePreviewsToDelete.length} ` +
+                `stale preview(s): ${stalePreviewsToDelete.join(', ')}`;
+              execSync(`git commit -m "${commitMsg}"`);
+              execSync('git push origin gh-pages');
+              console.log('✅ Successfully cleaned up stale previews!');
+            } catch (error) {
+              console.log('⚠️  No changes to commit or push failed:', error.message);
+            }
+
+      # Step 3: Create summary issue comment (optional)
+      - name: Create summary comment
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            console.log('Stale cleanup completed successfully!');
+            // You can optionally create an issue comment here for visibility

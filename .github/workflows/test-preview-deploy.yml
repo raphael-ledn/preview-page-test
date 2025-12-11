@@ -1,0 +1,177 @@
+name: Test - Deploy Preview
+
+# Simplified version for testing preview deployments
+# This workflow creates a preview site for each PR
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'requirements.txt'
+
+# Prevent multiple builds for the same PR
+concurrency:
+  group: test-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-preview:
+    name: Deploy Test Preview
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      # Step 1: Get the PR code
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      # Step 2: Setup Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # Step 3: Install MkDocs
+      - name: Install dependencies
+        run: python -m pip install --upgrade -r requirements.txt
+
+      # Step 4: Calculate preview path
+      - name: Set preview path
+        id: preview
+        run: |
+          echo "PR Number: ${{ github.event.pull_request.number }}"
+          echo "path=preview/pr-${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          echo "url=https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/preview/pr-${{ github.event.pull_request.number }}/" >> $GITHUB_OUTPUT
+          echo "Preview will be at: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/preview/pr-${{ github.event.pull_request.number }}/"
+
+      # Step 5: Update site_url for preview
+      - name: Configure MkDocs for preview
+        run: |
+          echo "Original site_url:"
+          grep "site_url:" mkdocs.yml || echo "No site_url found"
+
+          # Update or add site_url
+          if grep -q "site_url:" mkdocs.yml; then
+            sed -i "s|site_url:.*|site_url: ${{ steps.preview.outputs.url }}|g" mkdocs.yml
+          else
+            echo "site_url: ${{ steps.preview.outputs.url }}" >> mkdocs.yml
+          fi
+
+          echo "Updated site_url:"
+          grep "site_url:" mkdocs.yml
+
+      # Step 6: Build the site
+      - name: Build preview site
+        run: |
+          echo "Building MkDocs site..."
+          python -m mkdocs build --strict
+          echo "Build complete! Output in .site/"
+          ls -la .site/
+
+      # Step 7: Get gh-pages branch
+      - name: Checkout gh-pages branch
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: gh-pages-repo
+          fetch-depth: 1
+
+      # Step 8: Deploy to gh-pages
+      - name: Deploy preview
+        run: |
+          echo "Deploying to: ${{ steps.preview.outputs.path }}"
+
+          # Create preview directory
+          mkdir -p "gh-pages-repo/${{ steps.preview.outputs.path }}"
+
+          # Remove old content
+          rm -rf "gh-pages-repo/${{ steps.preview.outputs.path }}/"*
+
+          # Copy new build
+          cp -r .site/* "gh-pages-repo/${{ steps.preview.outputs.path }}/"
+
+          # Navigate to gh-pages
+          cd gh-pages-repo
+
+          # Show what we're committing
+          echo "Files to commit:"
+          git status --short
+
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Commit and push
+          git add .
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Test: Deploy preview for PR #${{ github.event.pull_request.number }}"
+            git push origin gh-pages
+            echo "Preview deployed successfully!"
+          fi
+
+      # Step 9: Comment on PR
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = ${{ github.event.pull_request.number }};
+            const previewUrl = '${{ steps.preview.outputs.url }}';
+
+            console.log(`Commenting on PR #${prNumber}`);
+            console.log(`Preview URL: ${previewUrl}`);
+
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('🧪 Test Preview')
+            );
+
+            const commentBody = `## 🧪 Test Preview Deployment
+
+            ✅ Your preview is ready for testing!
+
+            **Preview URL:** ${previewUrl}
+
+            **What to test:**
+            - [ ] Preview site loads correctly
+            - [ ] All navigation links work
+            - [ ] Your changes are visible
+            - [ ] No broken links or images
+
+            This preview will be cleaned up when the PR is closed.
+
+            ---
+            <sub>Last updated: ${new Date().toISOString()}</sub>`;
+
+            if (botComment) {
+              console.log('Updating existing comment');
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: commentBody,
+              });
+            } else {
+              console.log('Creating new comment');
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: commentBody,
+              });
+            }
+
+            console.log('Comment posted successfully!');

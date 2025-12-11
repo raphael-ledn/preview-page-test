@@ -1,0 +1,93 @@
+name: Test - Cleanup Preview
+
+# Simplified version for testing preview cleanup
+# This workflow removes the preview site when a PR is closed
+
+on:
+  pull_request:
+    types: [closed]
+
+# Don't cancel cleanup - let it finish
+concurrency:
+  group: test-preview-cleanup-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  cleanup-preview:
+    name: Cleanup Test Preview
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      # Step 1: Get gh-pages branch
+      - name: Checkout gh-pages branch
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          fetch-depth: 1
+
+      # Step 2: Calculate preview path
+      - name: Set preview path
+        id: preview
+        run: |
+          echo "PR Number: ${{ github.event.pull_request.number }}"
+          echo "path=preview/pr-${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+
+      # Step 3: Remove preview directory
+      - name: Remove preview directory
+        run: |
+          PREVIEW_DIR="${{ steps.preview.outputs.path }}"
+          echo "Looking for preview at: $PREVIEW_DIR"
+
+          if [ -d "$PREVIEW_DIR" ]; then
+            echo "✅ Found preview directory, removing..."
+            ls -la "$PREVIEW_DIR"
+            rm -rf "$PREVIEW_DIR"
+
+            # Configure git
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+
+            # Commit deletion
+            git add .
+            git commit -m "Test: Cleanup preview for PR #${{ github.event.pull_request.number }}"
+            git push origin gh-pages
+
+            echo "✅ Preview cleaned up successfully!"
+          else
+            echo "⚠️  Preview directory not found: $PREVIEW_DIR"
+            echo "Nothing to clean up (this is OK)"
+          fi
+
+      # Step 4: Comment on PR
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = ${{ github.event.pull_request.number }};
+
+            console.log(`Commenting cleanup on PR #${prNumber}`);
+
+            const commentBody = `## 🧹 Test Preview Cleanup
+
+            ✅ Preview has been cleaned up successfully.
+
+            The preview site has been removed from the gh-pages branch.
+
+            **What was cleaned up:**
+            - Removed \`preview/pr-${prNumber}/\` directory
+            - Freed up repository space
+
+            ---
+            <sub>Cleaned up at: ${new Date().toISOString()}</sub>`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: commentBody,
+            });
+
+            console.log('Cleanup comment posted successfully!');
