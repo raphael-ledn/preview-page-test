@@ -71,8 +71,8 @@ jobs:
         run: |
           echo "Building MkDocs site..."
           python -m mkdocs build --strict
-          echo "Build complete! Output in .site/"
-          ls -la .site/
+          echo "Build complete! Output in site/"
+          ls -la site/
 
       # Step 7: Get gh-pages branch
       - name: Checkout gh-pages branch
@@ -94,7 +94,7 @@ jobs:
           rm -rf "gh-pages-repo/${{ steps.preview.outputs.path }}/"*
 
           # Copy new build
-          cp -r .site/* "gh-pages-repo/${{ steps.preview.outputs.path }}/"
+          cp -r site/* "gh-pages-repo/${{ steps.preview.outputs.path }}/"
 
           # Navigate to gh-pages
           cd gh-pages-repo
